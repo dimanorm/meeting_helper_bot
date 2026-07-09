@@ -47,6 +47,22 @@ async def cmd_register(message: types.Message):
     else:
         await message.answer(f"Сотрудник '{name}' не найден в базе данных.")
 
+@dp.message(Command("schedule"))
+async def cmd_schedule(message: types.Message):
+    schedule_data = db.get_upcoming_meetings()
+    
+    if not schedule_data:
+        await message.answer("📅 На ближайшее время встреч не запланировано.")
+        return
+        
+    lines = ["<b>📅 Расписание встреч:</b>\n"]
+    for m_id, data in schedule_data.items():
+        participants_str = ", ".join(data['participants'])
+        # Формат: ID: 1 | 09.07 14:00-15:00 | 🔴 Иван, 🔵 Анна
+        lines.append(f"<code>[ID:{m_id}]</code> {data['time']}\nУчастники: {participants_str}\n")
+        
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
 @dp.message(F.text & ~F.text.startswith('/'))
 async def handle_meeting_request(message: types.Message):
     user_name = db.get_user_by_tg(message.from_user.id)
