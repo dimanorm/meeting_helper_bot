@@ -67,31 +67,38 @@ async def cmd_schedule(message: types.Message):
 async def handle_meeting_request(message: types.Message):
     user_name = db.get_user_by_tg(message.from_user.id)
     
-    # Формирование динамического контекста
     context_prompt = ""
     if user_name:
-        context_prompt = f"Текущий автор сообщения: {user_name}. Если автор использует местоимения 'со мной', 'мне', 'у меня', обязательно добавь имя '{user_name}' в массив participants."
+        context_prompt = f"Текущий автор: {user_name}. 'Со мной' = '{user_name}'."
     else:
-        context_prompt = "Автор не зарегистрирован. Игнорировать контекстные местоимения первого лица."
+        context_prompt = "Автор неизвестен."
 
-    system_prompt = f"""Действуй как строгий парсер расписания. 
-    {context_prompt}
-    Извлеки из текста параметры встречи.
-    Верни ТОЛЬКО валидный JSON без маркдауна и комментариев.
-    Структура:
-    {{
-      "participants": ["Имя1", "Имя2"],
-      "start_dt": "YYYY-MM-DD HH:MM:SS",
-      "end_dt": "YYYY-MM-DD HH:MM:SS"
-    }}
-    Текущий год 2026. Месяц 07. Если время конца не указано, автоматически прибавляй 1 час к времени начала."""
+    # Мощный промпт маршрутизатор
+    system_prompt = f"""Ты — ИИ-менеджер расписания. {context_prompt}
+Текущая дата: 2026-07-09.
+Определи намерение пользователя (action) и извлеки данные.
+Верни ТОЛЬКО JSON.
 
-    processing_msg = await message.answer("Обработка запроса нейросетью...")
+Форматы ответов:
+1. Создание новой встречи:
+{{"action": "create", "participants": ["Имя1", "Имя2"], "start_dt": "YYYY-MM-DD HH:MM:00", "end_dt": "YYYY-MM-DD HH:MM:00"}}
+
+2. Удаление встречи (если юзер указал номер/ID):
+{{"action": "delete", "meeting_id": 123}}
+
+3. Обновление встречи (замена времени или списка участников):
+{{"action": "update", "meeting_id": 123, "participants": ["Имя1", "Имя2"], "start_dt": "YYYY-MM-DD HH:MM:00", "end_dt": "YYYY-MM-DD HH:MM:00"}}
+
+Правила:
+- Если время конца не указано, прибавляй 1 час к началу.
+- Если юзер просит перенести встречу или добавить/убрать кого-то, он должен указать ID встречи. Используй action "update".
+"""
+
+    processing_msg = await message.answer("🔄 Обработка...")
 
     try:
-        # Использование бесплатной и мощной модели Qwen
         response = await llm_client.chat.completions.create(
-            model="qwen/qwen3-next-80b-a3b-instruct:free",
+            model="qwen/qwen-2.5-7b-instruct:free",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message.text}
@@ -99,43 +106,76 @@ async def handle_meeting_request(message: types.Message):
             temperature=0.0
         )
         
-        # Очистка ответа от возможных артефактов маркдауна (```json ... ```)
         raw_json = response.choices[0].message.content.strip()
-        if raw_json.startswith("```json"):
-            raw_json = raw_json[7:-3].strip()
-        elif raw_json.startswith("```"):
-            raw_json = raw_json[3:-3].strip()
+        if raw_json.startswith("```json"): raw_json = raw_json[7:-3].strip()
+        elif raw_json.startswith("```"): raw_json = raw_json[3:-3].strip()
             
         data = json.loads(raw_json)
-        participants = data.get("participants", [])
-        start_dt = data.get("start_dt")
-        end_dt = data.get("end_dt")
-        
-        if not participants or not start_dt or not end_dt:
-            await processing_msg.edit_text("Ошибка извлечения данных. Пропущены участники или время.")
-            return
+        action = data.get("action")
 
-        # Проверка существования сотрудников
-        users_map = db.get_users_ids_by_names(participants)
-        missing = [p for p in participants if p not in users_map]
-        if missing:
-            await processing_msg.edit_text(f"Сотрудники не найдены в базе: {', '.join(missing)}")
-            return
+        # --- РОУТИНГ ДЕЙСТВИЙ ---
+
+        # Действие: УДАЛЕНИЕ
+        if action == "delete":
+            m_id = data.get("meeting_id")
+            if not m_id:
+                return await processing_msg.edit_text("❌ Укажите ID встречи для удаления.")
             
-        # Запуск валидации пересечений
-        user_ids = list(users_map.values())
-        success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
-        
-        if success:
-            await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
+            # Вызываем функцию удаления (ее нужно добавить в database.py, см. ниже)
+            if db.delete_meeting(m_id):
+                await processing_msg.edit_text(f"🗑 Встреча [ID:{m_id}] успешно отменена.")
+            else:
+                await processing_msg.edit_text(f"❌ Встреча [ID:{m_id}] не найдена.")
+
+        # Действие: ОБНОВЛЕНИЕ
+        elif action == "update":
+            m_id = data.get("meeting_id")
+            if not m_id:
+                return await processing_msg.edit_text("❌ Укажите ID встречи для изменения.")
+            
+            # Для простоты логики, обновление = удаление старой + создание новой
+            # На продакшене так делать не стоит, но для прототипа это самый надежный способ проверки коллизий
+            participants = data.get("participants", [])
+            start_dt = data.get("start_dt")
+            end_dt = data.get("end_dt")
+            
+            users_map = db.get_users_ids_by_names(participants)
+            
+            # Удаляем старую
+            db.delete_meeting(m_id)
+            
+            # Пробуем создать новую
+            user_ids = list(users_map.values())
+            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
+            
+            if success:
+                await processing_msg.edit_text(f"✅ Встреча [ID:{m_id}] обновлена!\nНовое время: {start_dt} - {end_dt}\nУчастники: {', '.join(participants)}")
+            else:
+                await processing_msg.edit_text(f"❌ Не удалось перенести: пересечение времени у {', '.join(set(conflicts))}. (Встреча отменена, создайте заново).")
+
+        # Действие: СОЗДАНИЕ (твой старый код)
+        elif action == "create":
+            participants = data.get("participants", [])
+            start_dt = data.get("start_dt")
+            end_dt = data.get("end_dt")
+            users_map = db.get_users_ids_by_names(participants)
+            missing = [p for p in participants if p not in users_map]
+            
+            if missing:
+                return await processing_msg.edit_text(f"Не найдены в базе: {', '.join(missing)}")
+                
+            user_ids = list(users_map.values())
+            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
+            
+            if success:
+                await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
+            else:
+                await processing_msg.edit_text(f"❌ Ошибка: пересечение времени.\nЗанятые сотрудники: {', '.join(set(conflicts))}")
         else:
-            conflicts_unique = list(set(conflicts))
-            await processing_msg.edit_text(f"❌ Ошибка бронирования: пересечение времени.\nЗанятые сотрудники: {', '.join(conflicts_unique)}")
-            
-    except json.JSONDecodeError:
-        await processing_msg.edit_text("Ошибка: LLM вернула невалидный JSON.")
+            await processing_msg.edit_text("🤔 Не совсем понял, что нужно сделать. Попробуйте сформулировать иначе.")
+
     except Exception as e:
-        await processing_msg.edit_text(f"Критическая ошибка системы: {e}")
+        await processing_msg.edit_text(f"Ошибка системы: {e}")
 
 async def main():
     await dp.start_polling(bot)
