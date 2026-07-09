@@ -5,21 +5,63 @@ DB_PATH = 'meetings.db'
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Таблицы
-    c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, tg_id INTEGER, name TEXT)''')
+    # Добавили поле color_emoji
+    c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, tg_id INTEGER, name TEXT, color_emoji TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS meetings (id INTEGER PRIMARY KEY, title TEXT, start_dt TEXT, end_dt TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS meeting_participants (meeting_id INTEGER, user_id INTEGER, FOREIGN KEY(meeting_id) REFERENCES meetings(id), FOREIGN KEY(user_id) REFERENCES users(id))''')
     
-    # Сидинг базы (заполнение при первом запуске)
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
+        # У каждого юзера теперь свой цветной маркер
         initial_users = [
-            (1, None, 'Иван'), (2, None, 'Анна'), 
-            (3, None, 'Петр'), (4, None, 'Семен'), (5, None, 'Андрей')
+            (1, None, 'Иван', '🔴'), 
+            (2, None, 'Анна', '🔵'), 
+            (3, None, 'Петр', '🟢'), 
+            (4, None, 'Семен', '🟡'), 
+            (5, None, 'Андрей', '🟣')
         ]
-        c.executemany("INSERT INTO users (id, tg_id, name) VALUES (?, ?, ?)", initial_users)
+        c.executemany("INSERT INTO users (id, tg_id, name, color_emoji) VALUES (?, ?, ?, ?)", initial_users)
     conn.commit()
     conn.close()
+
+# Новая функция для получения расписания
+def get_upcoming_meetings():
+    """Возвращает список встреч, отсортированных по дате и времени начала."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    query = '''
+        SELECT m.id, m.start_dt, m.end_dt, u.name, u.color_emoji
+        FROM meetings m
+        JOIN meeting_participants mp ON m.id = mp.meeting_id
+        JOIN users u ON mp.user_id = u.id
+        ORDER BY m.start_dt ASC, m.id ASC
+    '''
+    c.execute(query)
+    rows = c.fetchall()
+    conn.close()
+    
+    # Группируем данные: {meeting_id: {'time': '...', 'participants': [('Иван', '🔴'), ...]}}
+    schedule = {}
+    for row in rows:
+        m_id, start, end, name, emoji = row
+        if m_id not in schedule:
+            # Преобразуем формат даты для красоты вывода
+            # Из '2026-07-09 14:00:00' делаем '09.07 14:00-15:00'
+            date_str = start[:10]  # '2026-07-09'
+            time_start = start[11:16] # '14:00'
+            time_end = end[11:16] # '15:00'
+            
+            # Если день совпадает, выводим красиво
+            formatted_time = f"{date_str[8:10]}.{date_str[5:7]} {time_start}-{time_end}"
+            
+            schedule[m_id] = {
+                'time': formatted_time,
+                'participants': []
+            }
+        schedule[m_id]['participants'].append(f"{emoji} {name}")
+        
+    return schedule
 
 def get_user_by_tg(tg_id: int):
     """Поиск имени сотрудника по Telegram ID"""
