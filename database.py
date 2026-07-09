@@ -130,3 +130,21 @@ def check_collision_and_book(user_ids: list, start_dt: str, end_dt: str):
     conn.commit()
     conn.close()
     return True, []
+
+
+def delete_meeting(meeting_id: int) -> bool:
+    """Удаляет встречу и связи с участниками. Возвращает True если удалено."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Проверяем, существует ли она
+    c.execute("SELECT id FROM meetings WHERE id = ?", (meeting_id,))
+    if not c.fetchone():
+        conn.close()
+        return False
+        
+    c.execute("DELETE FROM meeting_participants WHERE meeting_id = ?", (meeting_id,))
+    c.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
+    conn.commit()
+    conn.close()
+    return True
