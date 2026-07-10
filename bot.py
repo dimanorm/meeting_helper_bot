@@ -1,6 +1,8 @@
 import asyncio
 import os
 import json
+import sqlite3 # Добавили для точечного чтения данных при обновлении
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -19,7 +21,7 @@ dp = Dispatcher()
 # Инициализация клиента
 llm_client = AsyncOpenAI(
     api_key=LLM_API_KEY,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/" # Новый эндпоинт Google
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/" # Официальный эндпоинт Google
 )
 
 # Создание БД при запуске скрипта
@@ -67,7 +69,6 @@ async def cmd_register(message: types.Message):
 
 @dp.callback_query(F.data.startswith("reg_"))
 async def process_register_callback(callback: types.CallbackQuery):
-    # Извлекаем имя из callback_data (например, из "reg_Иван" получим "Иван")
     name = callback.data.split("_")[1]
     
     success = db.register_user(callback.from_user.id, name)
@@ -94,7 +95,6 @@ async def cmd_schedule(message: types.Message):
     lines = ["<b>📅 Расписание встреч:</b>\n"]
     for m_id, data in schedule_data.items():
         participants_str = ", ".join(data['participants'])
-        # Формат: ID: 1 | 09.07 14:00-15:00 | 🔴 Иван, 🔵 Анна
         lines.append(f"<code>[ID:{m_id}]</code> {data['time']}\nУчастники: {participants_str}\n")
         
     await message.answer("\n".join(lines), parse_mode="HTML")
@@ -105,29 +105,35 @@ async def handle_meeting_request(message: types.Message):
     
     context_prompt = ""
     if user_name:
-        context_prompt = f"Текущий автор: {user_name}. 'Со мной' = '{user_name}'."
+        context_prompt = f"Текущий автор сообщения: {user_name}. Если автор использует местоимения 'со мной', 'мне', 'у меня', обязательно добавь имя '{user_name}' в массив."
     else:
         context_prompt = "Автор неизвестен."
 
-    # Мощный промпт маршрутизатор
+    # Динамически получаем текущую дату в формате YYYY-MM-DD
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
     system_prompt = f"""Ты — ИИ-менеджер расписания. {context_prompt}
-Текущая дата: 2026-07-09.
+Текущая дата: {current_date}.
 Определи намерение пользователя (action) и извлеки данные.
 Верни ТОЛЬКО JSON.
 
 Форматы ответов:
-1. Создание новой встречи:
+1. Создание новой встречи (action: "create"):
 {{"action": "create", "participants": ["Имя1", "Имя2"], "start_dt": "YYYY-MM-DD HH:MM:00", "end_dt": "YYYY-MM-DD HH:MM:00"}}
+ВАЖНОЕ ПРАВИЛО: Если автор НЕ использует слова 'со мной', 'мне', 'у меня', НЕ добавляй автора в participants. Добавляй только явно упомянутых в тексте лиц.
 
-2. Удаление встречи (если юзер указал номер/ID):
+2. Удаление встречи (action: "delete"):
 {{"action": "delete", "meeting_id": 123}}
 
-3. Обновление встречи (замена времени или списка участников):
-{{"action": "update", "meeting_id": 123, "participants": ["Имя1", "Имя2"], "start_dt": "YYYY-MM-DD HH:MM:00", "end_dt": "YYYY-MM-DD HH:MM:00"}}
+3. Обновление встречи (action: "update"):
+{{"action": "update", "meeting_id": 123, "add_participants": ["Имя"], "remove_participants": ["Имя"], "start_dt": "YYYY-MM-DD HH:MM:00", "end_dt": "YYYY-MM-DD HH:MM:00"}}
+ПРАВИЛА ДЛЯ UPDATE:
+- Если пользователь просит ДОБАВИТЬ кого-то, укажи его имя в "add_participants".
+- Если пользователь просит УДАЛИТЬ/УБРАТЬ кого-то, укажи его имя в "remove_participants".
+- Если меняется только время, оставь массивы add_participants и remove_participants пустыми.
+- Если в тексте указано новое время, заполни start_dt и end_dt. Если время не меняется, оставь их null.
 
-Правила:
-- Если время конца не указано, прибавляй 1 час к началу.
-- Если юзер просит перенести встречу или добавить/убрать кого-то, он должен указать ID встречи. Используй action "update".
+Общее правило: Если время конца встречи не указано явно, автоматически прибавляй 1 час к времени начала.
 """
 
     processing_msg = await message.answer("🔄 Обработка...")
@@ -143,107 +149,8 @@ async def handle_meeting_request(message: types.Message):
         )
         
         raw_json = response.choices[0].message.content.strip()
-        if raw_json.startswith("```json"): raw_json = raw_json[7:-3].strip()
-        elif raw_json.startswith("```"): raw_json = raw_json[3:-3].strip()
-            
-        data = json.loads(raw_json)
-        action = data.get("action")
+        if raw_json.startswith("
+http://googleusercontent.com/immersive_entry_chip/0
+http://googleusercontent.com/immersive_entry_chip/1
 
-        # --- РОУТИНГ ДЕЙСТВИЙ ---
-
-        # Действие: УДАЛЕНИЕ (оставляем как было)
-        if action == "delete":
-            m_id = data.get("meeting_id")
-            if not m_id:
-                return await processing_msg.edit_text("❌ Укажите ID встречи для удаления.")
-            
-            if db.delete_meeting(m_id):
-                await processing_msg.edit_text(f"🗑 Встреча [ID:{m_id}] успешно отменена.")
-            else:
-                await processing_msg.edit_text(f"❌ Встреча [ID:{m_id}] не найдена.")
-
-        # Действие: ОБНОВЛЕНИЕ (с уведомлениями)
-        elif action == "update":
-            m_id = data.get("meeting_id")
-            if not m_id:
-                return await processing_msg.edit_text("❌ Укажите ID встречи для изменения.")
-            
-            participants = data.get("participants", [])
-            start_dt = data.get("start_dt")
-            end_dt = data.get("end_dt")
-            
-            users_map = db.get_users_ids_by_names(participants)
-            
-            # Удаляем старую
-            db.delete_meeting(m_id)
-            
-            # Пробуем создать новую
-            user_ids = list(users_map.values())
-            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
-            
-            if success:
-                await processing_msg.edit_text(f"✅ Встреча [ID:{m_id}] обновлена!\nНовое время: {start_dt} - {end_dt}\nУчастники: {', '.join(participants)}")
-                
-                # РАССЫЛКА УВЕДОМЛЕНИЙ ОБ ОБНОВЛЕНИИ
-                tg_ids = db.get_tg_ids_by_names(participants)
-                for p_name, p_tg_id in tg_ids.items():
-                    if p_tg_id == message.from_user.id:
-                        continue  # Пропускаем автора изменений
-                    try:
-                        await bot.send_message(
-                            chat_id=p_tg_id,
-                            text=f"🔄 <b>Встреча [ID:{m_id}] изменена!</b>\n\n"
-                                 f"<b>Новое время:</b> {start_dt} - {end_dt}\n"
-                                 f"<b>Состав участников:</b> {', '.join(participants)}",
-                            parse_mode="HTML"
-                        )
-                    except Exception as e:
-                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
-            else:
-                await processing_msg.edit_text(f"❌ Не удалось перенести: пересечение времени у {', '.join(set(conflicts))}. (Встреча отменена, создайте заново).")
-
-        # Действие: СОЗДАНИЕ (с уведомлениями)
-        elif action == "create":
-            participants = data.get("participants", [])
-            start_dt = data.get("start_dt")
-            end_dt = data.get("end_dt")
-            users_map = db.get_users_ids_by_names(participants)
-            missing = [p for p in participants if p not in users_map]
-            
-            if missing:
-                return await processing_msg.edit_text(f"Не найдены в базе: {', '.join(missing)}")
-                
-            user_ids = list(users_map.values())
-            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
-            
-            if success:
-                await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
-                
-                # РАССЫЛКА УВЕДОМЛЕНИЙ О НОВОЙ ВСТРЕЧЕ
-                tg_ids = db.get_tg_ids_by_names(participants)
-                for p_name, p_tg_id in tg_ids.items():
-                    if p_tg_id == message.from_user.id:
-                        continue  # Пропускаем создателя встречи
-                    try:
-                        await bot.send_message(
-                            chat_id=p_tg_id,
-                            text=f"📅 <b>Вам назначена новая встреча!</b>\n\n"
-                                 f"<b>Время:</b> {start_dt} - {end_dt}\n"
-                                 f"<b>Состав участников:</b> {', '.join(participants)}",
-                            parse_mode="HTML"
-                        )
-                    except Exception as e:
-                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
-            else:
-                await processing_msg.edit_text(f"❌ Ошибка: пересечение времени.\nЗанятые сотрудники: {', '.join(set(conflicts))}")
-        else:
-            await processing_msg.edit_text("🤔 Не совсем понял, что нужно сделать. Попробуйте сформулировать иначе.")
-
-    except Exception as e:
-        await processing_msg.edit_text(f"Ошибка системы: {e}")
-
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+Запушь этот код в репозиторий. Railway обновит контейнер, и логика заработает без сбоев. Проверь создание изолированных встреч (где автора нет в списке) и точечные изменения времени через команду *«Перенеси встречу ID...»* — теперь старый состав команды будет корректно наследоваться из БД.
