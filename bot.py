@@ -134,7 +134,7 @@ async def handle_meeting_request(message: types.Message):
 
     try:
         response = await llm_client.chat.completions.create(
-            model="meta-llama/llama-3.3-70b-instruct:free",
+            model="google/gemma-4-31b-it:free",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message.text}
