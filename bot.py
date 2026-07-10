@@ -289,140 +289,40 @@ async def handle_meeting_request(message: types.Message):
                 db.check_collision_and_book(list(old_users_map.values()), current_start, current_end)
                 await processing_msg.edit_text(f"❌ Не удалось изменить встречу: пересечение времени у {', '.join(set(conflicts))}. Изменения отменены.")
 
-
 # Действие: СОЗДАНИЕ (с уведомлениями)
-
-
-
-elif action == "create":
-
-
-
-participants = data.get("participants", [])
-
-
-
-start_dt = data.get("start_dt")
-
-
-
-end_dt = data.get("end_dt")
-
-
-
-users_map = db.get_users_ids_by_names(participants)
-
-
-
-missing = [p for p in participants if p not in users_map]
-
-
-
-
-
-
-if missing:
-
-
-
-return await processing_msg.edit_text(f"Не найдены в базе: {', '.join(missing)}")
-
-
-
-
-
-
-user_ids = list(users_map.values())
-
-
-
-success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
-
-
-
-
-
-
-if success:
-
-
-
-await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
-
-
-
-
-
-
-# РАССЫЛКА УВЕДОМЛЕНИЙ О НОВОЙ ВСТРЕЧЕ
-
-
-
-tg_ids = db.get_tg_ids_by_names(participants)
-
-
-
-for p_name, p_tg_id in tg_ids.items():
-
-
-
-if p_tg_id == message.from_user.id:
-
-
-
-continue # Пропускаем создателя встречи
-
-
-
-try:
-
-
-
-await bot.send_message(
-
-
-
-chat_id=p_tg_id,
-
-
-
-text=f"📅 <b>Вам назначена новая встреча!</b>\n\n"
-
-
-
-f"<b>Время:</b> {start_dt} - {end_dt}\n"
-
-
-
-f"<b>Состав участников:</b> {', '.join(participants)}",
-
-
-
-parse_mode="HTML"
-
-
-
-)
-
-
-
-except Exception as e:
-
-
-
-print(f"Не удалось отправить уведомление для {p_name}: {e}")
-
-
-
-else:
-
-
-
-await processing_msg.edit_text(f"❌ Ошибка: пересечение времени.\nЗанятые сотрудники: {', '.join(set(conflicts))}")
-
-
-
-
+        elif action == "create":
+            participants = data.get("participants", [])
+            start_dt = data.get("start_dt")
+            end_dt = data.get("end_dt")
+            users_map = db.get_users_ids_by_names(participants)
+            missing = [p for p in participants if p not in users_map]
+            
+            if missing:
+                return await processing_msg.edit_text(f"Не найдены в базе: {', '.join(missing)}")
+                
+            user_ids = list(users_map.values())
+            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
+            
+            if success:
+                await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
+                
+                # РАССЫЛКА УВЕДОМЛЕНИЙ О НОВОЙ ВСТРЕЧЕ
+                tg_ids = db.get_tg_ids_by_names(participants)
+                for p_name, p_tg_id in tg_ids.items():
+                    if p_tg_id == message.from_user.id:
+                        continue  # Пропускаем создателя встречи
+                    try:
+                        await bot.send_message(
+                            chat_id=p_tg_id,
+                            text=f"📅 <b>Вам назначена новая встреча!</b>\n\n"
+                                 f"<b>Время:</b> {start_dt} - {end_dt}\n"
+                                 f"<b>Состав участников:</b> {', '.join(participants)}",
+                            parse_mode="HTML"
+                        )
+                    except Exception as e:
+                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
+            else:
+                await processing_msg.edit_text(f"❌ Ошибка: пересечение времени.\nЗанятые сотрудники: {', '.join(set(conflicts))}")
         else:
 
             await processing_msg.edit_text("🤔 Не совсем понял, что нужно сделать. Попробуйте сформулировать иначе.")
