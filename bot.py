@@ -151,26 +151,23 @@ async def handle_meeting_request(message: types.Message):
 
         # --- РОУТИНГ ДЕЙСТВИЙ ---
 
-        # Действие: УДАЛЕНИЕ
+        # Действие: УДАЛЕНИЕ (оставляем как было)
         if action == "delete":
             m_id = data.get("meeting_id")
             if not m_id:
                 return await processing_msg.edit_text("❌ Укажите ID встречи для удаления.")
             
-            # Вызываем функцию удаления (ее нужно добавить в database.py, см. ниже)
             if db.delete_meeting(m_id):
                 await processing_msg.edit_text(f"🗑 Встреча [ID:{m_id}] успешно отменена.")
             else:
                 await processing_msg.edit_text(f"❌ Встреча [ID:{m_id}] не найдена.")
 
-        # Действие: ОБНОВЛЕНИЕ
+        # Действие: ОБНОВЛЕНИЕ (с уведомлениями)
         elif action == "update":
             m_id = data.get("meeting_id")
             if not m_id:
                 return await processing_msg.edit_text("❌ Укажите ID встречи для изменения.")
             
-            # Для простоты логики, обновление = удаление старой + создание новой
-            # На продакшене так делать не стоит, но для прототипа это самый надежный способ проверки коллизий
             participants = data.get("participants", [])
             start_dt = data.get("start_dt")
             end_dt = data.get("end_dt")
@@ -186,10 +183,26 @@ async def handle_meeting_request(message: types.Message):
             
             if success:
                 await processing_msg.edit_text(f"✅ Встреча [ID:{m_id}] обновлена!\nНовое время: {start_dt} - {end_dt}\nУчастники: {', '.join(participants)}")
+                
+                # РАССЫЛКА УВЕДОМЛЕНИЙ ОБ ОБНОВЛЕНИИ
+                tg_ids = db.get_tg_ids_by_names(participants)
+                for p_name, p_tg_id in tg_ids.items():
+                    if p_tg_id == message.from_user.id:
+                        continue  # Пропускаем автора изменений
+                    try:
+                        await bot.send_message(
+                            chat_id=p_tg_id,
+                            text=f"🔄 <b>Встреча [ID:{m_id}] изменена!</b>\n\n"
+                                 f"<b>Новое время:</b> {start_dt} - {end_dt}\n"
+                                 f"<b>Состав участников:</b> {', '.join(participants)}",
+                            parse_mode="HTML"
+                        )
+                    except Exception as e:
+                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
             else:
                 await processing_msg.edit_text(f"❌ Не удалось перенести: пересечение времени у {', '.join(set(conflicts))}. (Встреча отменена, создайте заново).")
 
-        # Действие: СОЗДАНИЕ (твой старый код)
+        # Действие: СОЗДАНИЕ (с уведомлениями)
         elif action == "create":
             participants = data.get("participants", [])
             start_dt = data.get("start_dt")
@@ -205,6 +218,22 @@ async def handle_meeting_request(message: types.Message):
             
             if success:
                 await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
+                
+                # РАССЫЛКА УВЕДОМЛЕНИЙ О НОВОЙ ВСТРЕЧЕ
+                tg_ids = db.get_tg_ids_by_names(participants)
+                for p_name, p_tg_id in tg_ids.items():
+                    if p_tg_id == message.from_user.id:
+                        continue  # Пропускаем создателя встречи
+                    try:
+                        await bot.send_message(
+                            chat_id=p_tg_id,
+                            text=f"📅 <b>Вам назначена новая встреча!</b>\n\n"
+                                 f"<b>Время:</b> {start_dt} - {end_dt}\n"
+                                 f"<b>Состав участников:</b> {', '.join(participants)}",
+                            parse_mode="HTML"
+                        )
+                    except Exception as e:
+                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
             else:
                 await processing_msg.edit_text(f"❌ Ошибка: пересечение времени.\nЗанятые сотрудники: {', '.join(set(conflicts))}")
         else:
