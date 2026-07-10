@@ -199,152 +199,95 @@ async def handle_meeting_request(message: types.Message):
 
 
         # Действие: ОБНОВЛЕНИЕ (с уведомлениями)
-
         elif action == "update":
-
             m_id = data.get("meeting_id")
-
             if not m_id:
-
                 return await processing_msg.edit_text("❌ Укажите ID встречи для изменения.")
-
             
-
-            participants = data.get("participants", [])
-
-            start_dt = data.get("start_dt")
-
-            end_dt = data.get("end_dt")
-
+            # 1. Запрашиваем текущее состояние встречи из базы данных
+            conn = sqlite3.connect(db.DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT start_dt, end_dt FROM meetings WHERE id = ?", (m_id,))
+            meeting_row = c.fetchone()
             
-
-            users_map = db.get_users_ids_by_names(participants)
-
-            
-
-            # Удаляем старую
-
-            db.delete_meeting(m_id)
-
-            
-
-            # Пробуем создать новую
-
-            user_ids = list(users_map.values())
-
-            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
-
-            
-
-            if success:
-
-                await processing_msg.edit_text(f"✅ Встреча [ID:{m_id}] обновлена!\nНовое время: {start_dt} - {end_dt}\nУчастники: {', '.join(participants)}")
-
+            if not meeting_row:
+                conn.close()
+                return await processing_msg.edit_text(f"❌ Встреча [ID:{m_id}] не найдена.")
                 
-
-                # РАССЫЛКА УВЕДОМЛЕНИЙ ОБ ОБНОВЛЕНИИ
-
-                tg_ids = db.get_tg_ids_by_names(participants)
-
-                for p_name, p_tg_id in tg_ids.items():
-
-                    if p_tg_id == message.from_user.id:
-
-                        continue  # Пропускаем автора изменений
-
-                    try:
-
-                        await bot.send_message(
-
-                            chat_id=p_tg_id,
-
-                            text=f"🔄 <b>Встреча [ID:{m_id}] изменена!</b>\n\n"
-
-                                 f"<b>Новое время:</b> {start_dt} - {end_dt}\n"
-
-                                 f"<b>Состав участников:</b> {', '.join(participants)}",
-
-                            parse_mode="HTML"
-
-                        )
-
-                    except Exception as e:
-
-                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
-
-            else:
-
-                await processing_msg.edit_text(f"❌ Не удалось перенести: пересечение времени у {', '.join(set(conflicts))}. (Встреча отменена, создайте заново).")
-
-
-
-        # Действие: СОЗДАНИЕ (с уведомлениями)
-
-        elif action == "create":
-
-            participants = data.get("participants", [])
-
-            start_dt = data.get("start_dt")
-
-            end_dt = data.get("end_dt")
-
-            users_map = db.get_users_ids_by_names(participants)
-
-            missing = [p for p in participants if p not in users_map]
-
+            current_start, current_end = meeting_row
             
-
+            c.execute("""
+                SELECT u.name FROM meeting_participants mp 
+                JOIN users u ON mp.user_id = u.id 
+                WHERE mp.meeting_id = ?
+            """, (m_id,))
+            current_participants = [row[0] for row in c.fetchall()]
+            conn.close()
+            
+            # 2. Формируем финальное время (новое или оставляем текущее)
+            start_dt = data.get("start_dt") or current_start
+            end_dt = data.get("end_dt") or current_end
+            
+            # 3. Корректируем список участников
+            add_parts = data.get("add_participants", [])
+            remove_parts = data.get("remove_participants", [])
+            
+            # Обрабатываем контекст "со мной" для операции добавления
+            if "со мной" in message.text.lower() and user_name and user_name not in add_parts:
+                add_parts.append(user_name)
+            
+            updated_participants = list(current_participants)
+            for p in add_parts:
+                if p not in updated_participants:
+                    updated_participants.append(p)
+            for p in remove_parts:
+                if p in updated_participants:
+                    updated_participants.remove(p)
+                    
+            if not updated_participants:
+                return await processing_msg.edit_text("❌ Ошибка: во встрече должен остаться хотя бы один участник.")
+            
+            users_map = db.get_users_ids_by_names(updated_participants)
+            missing = [p for p in updated_participants if p not in users_map]
             if missing:
-
-                return await processing_msg.edit_text(f"Не найдены в базе: {', '.join(missing)}")
-
-                
-
-            user_ids = list(users_map.values())
-
-            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
-
+                return await processing_msg.edit_text(f"Сотрудники не найдены в базе: {', '.join(missing)}")
             
-
+            # 4. Проверка пересечений и перезапись встречи
+            db.delete_meeting(m_id) # Удаляем старую для чистоты проверки коллизий
+            
+            user_ids = list(users_map.values())
+            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
+            
             if success:
-
-                await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
-
+                # Получаем новый ID пересозданной встречи
+                conn = sqlite3.connect(db.DB_PATH)
+                c = conn.cursor()
+                c.execute("SELECT max(id) FROM meetings")
+                new_id = c.fetchone()[0]
+                conn.close()
                 
-
-                # РАССЫЛКА УВЕДОМЛЕНИЙ О НОВОЙ ВСТРЕЧЕ
-
-                tg_ids = db.get_tg_ids_by_names(participants)
-
+                await processing_msg.edit_text(f"✅ Встреча обновлена! Новый <code>[ID:{new_id}]</code>\nВремя: {start_dt} - {end_dt}\nУчастники: {', '.join(updated_participants)}")
+                
+                # Рассылка уведомлений участникам
+                tg_ids = db.get_tg_ids_by_names(updated_participants)
                 for p_name, p_tg_id in tg_ids.items():
-
                     if p_tg_id == message.from_user.id:
-
-                        continue  # Пропускаем создателя встречи
-
+                        continue
                     try:
-
                         await bot.send_message(
-
                             chat_id=p_tg_id,
-
-                            text=f"📅 <b>Вам назначена новая встреча!</b>\n\n"
-
-                                 f"<b>Время:</b> {start_dt} - {end_dt}\n"
-
-                                 f"<b>Состав участников:</b> {', '.join(participants)}",
-
+                            text=f"🔄 <b>Встреча [ID:{new_id}] изменена!</b>\n\n"
+                                 f"<b>Новое время:</b> {start_dt} - {end_dt}\n"
+                                 f"<b>Состав участников:</b> {', '.join(updated_participants)}",
                             parse_mode="HTML"
-
                         )
-
                     except Exception as e:
-
                         print(f"Не удалось отправить уведомление для {p_name}: {e}")
-
             else:
-
-                await processing_msg.edit_text(f"❌ Ошибка: пересечение времени.\nЗанятые сотрудники: {', '.join(set(conflicts))}")
+                # Откат транзакции: возвращаем старую встречу, если новые слоты заняты
+                old_users_map = db.get_users_ids_by_names(current_participants)
+                db.check_collision_and_book(list(old_users_map.values()), current_start, current_end)
+                await processing_msg.edit_text(f"❌ Не удалось изменить встречу: пересечение времени у {', '.join(set(conflicts))}. Изменения отменены.")
 
         else:
 
