@@ -148,3 +148,13 @@ def delete_meeting(meeting_id: int) -> bool:
     conn.commit()
     conn.close()
     return True
+
+
+def get_unregistered_users():
+    """Возвращает список имен сотрудников, у которых еще нет привязанного tg_id"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name FROM users WHERE tg_id IS NULL")
+    users = [row[0] for row in c.fetchall()]
+    conn.close()
+    return users
