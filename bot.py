@@ -16,10 +16,10 @@ LLM_API_KEY = os.getenv("LLM_API_KEY")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Инициализация клиента для OpenRouter
+# Инициализация клиента
 llm_client = AsyncOpenAI(
     api_key=LLM_API_KEY,
-    base_url="https://openrouter.ai/api/v1"
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/" # Новый эндпоинт Google
 )
 
 # Создание БД при запуске скрипта
@@ -134,7 +134,7 @@ async def handle_meeting_request(message: types.Message):
 
     try:
         response = await llm_client.chat.completions.create(
-            model="qwen/qwen3-next-80b-a3b-instruct:free",
+            model="gemini-3.1-flash-lite",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message.text}
