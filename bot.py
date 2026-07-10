@@ -3,6 +3,7 @@ import os
 import json
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import database as db
@@ -26,26 +27,61 @@ db.init_db()
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    text = (
-        "Система инициализирована. База данных готова.\n"
-        "Для работы требуется привязать аккаунт к профилю сотрудника.\n"
-        "Формат команды: /register [Имя]\n"
-        "Доступные тестовые профили: Иван, Анна, Петр, Семен, Андрей."
+    welcome_text = (
+        "<b>👋 Приветствую! Я ИИ-ассистент для управления календарем встреч компании.</b>\n\n"
+        "Я умею понимать обычный текст и автоматически управлять расписанием, "
+        "а также слежу, чтобы никто из участников не был занят в одно и то же время.\n\n"
+        "<b>📋 Памятка по командам:</b>\n"
+        "1️⃣ <b>Регистрация:</b> <code>/register</code>\n"
+        "<i>По нажатию команды бот выведет интерактивные кнопки со списком свободных профилей сотрудников для быстрой привязки аккаунта.</i>\n\n"
+        "2️⃣ <b>Просмотр расписания:</b> <code>/schedule</code>\n"
+        "<i>Выводит список всех запланированных встреч с уникальными цветовыми маркерами для каждого сотрудника.</i>\n\n"
+        "<b>🤖 Как управлять встречами через ИИ (просто пишите в чат):</b>\n"
+        "• <b>Создание:</b> <i>'Создай встречу со мной, Анной и Михаилом завтра с 14 до 15:30'</i>\n"
+        "• <b>Изменение:</b> <i>'Перенеси встречу ID 2 на 18:00'</i> или <i>'Добавь Антона во встречу ID 1'</i>.\n"
+        "• <b>Удаление:</b> <i>'Отмени встречу номер 3'</i>.\n\n"
+        "<i>💡 Начните с отправки команды /register, чтобы привязать свой профиль!</i>"
     )
-    await message.answer(text)
+    await message.answer(welcome_text, parse_mode="HTML")
 
 @dp.message(Command("register"))
 async def cmd_register(message: types.Message):
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Ошибка формата. Используйте: /register [Имя]")
+    unregistered = db.get_unregistered_users()
+    
+    if not unregistered:
+        await message.answer("Все доступные профили сотрудников уже зарегистрированы.")
         return
-    name = args[1]
-    success = db.register_user(message.from_user.id, name)
+        
+    builder = InlineKeyboardBuilder()
+    for name in unregistered:
+        builder.button(text=name, callback_data=f"reg_{name}")
+        
+    builder.adjust(2) # Разметка: по 2 кнопки в ряд
+    
+    await message.answer(
+        "<b>Выбор профиля:</b>\n"
+        "Пожалуйста, выберите ваше имя из списка ниже для завершения регистрации:", 
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("reg_"))
+async def process_register_callback(callback: types.CallbackQuery):
+    # Извлекаем имя из callback_data (например, из "reg_Иван" получим "Иван")
+    name = callback.data.split("_")[1]
+    
+    success = db.register_user(callback.from_user.id, name)
     if success:
-        await message.answer(f"Аккаунт успешно привязан к профилю '{name}'.")
+        await callback.message.edit_text(
+            f"✅ <b>Регистрация успешна!</b>\n"
+            f"Ваш аккаунт привязан к корпоративному профилю: <b>{name}</b>.\n"
+            f"Теперь при планировании встреч ИИ будет распознавать контекст 'со мной'.",
+            parse_mode="HTML"
+        )
     else:
-        await message.answer(f"Сотрудник '{name}' не найден в базе данных.")
+        await callback.message.edit_text("❌ Произошла ошибка при регистрации. Попробуйте снова.")
+        
+    await callback.answer()
 
 @dp.message(Command("schedule"))
 async def cmd_schedule(message: types.Message):
