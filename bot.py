@@ -139,18 +139,231 @@ async def handle_meeting_request(message: types.Message):
     processing_msg = await message.answer("🔄 Обработка...")
 
     try:
-        response = await llm_client.chat.completions.create(
-            model="gemini-3.1-flash-lite",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message.text}
-            ],
-            temperature=0.0
-        )
-        
-        raw_json = response.choices[0].message.content.strip()
-        if raw_json.startswith("
-http://googleusercontent.com/immersive_entry_chip/0
-http://googleusercontent.com/immersive_entry_chip/1
 
-Запушь этот код в репозиторий. Railway обновит контейнер, и логика заработает без сбоев. Проверь создание изолированных встреч (где автора нет в списке) и точечные изменения времени через команду *«Перенеси встречу ID...»* — теперь старый состав команды будет корректно наследоваться из БД.
+        response = await llm_client.chat.completions.create(
+
+            model="gemini-3.1-flash-lite",
+
+            messages=[
+
+                {"role": "system", "content": system_prompt},
+
+                {"role": "user", "content": message.text}
+
+            ],
+
+            temperature=0.0
+
+        )
+
+        
+
+        raw_json = response.choices[0].message.content.strip()
+
+        if raw_json.startswith("```json"): raw_json = raw_json[7:-3].strip()
+
+        elif raw_json.startswith("```"): raw_json = raw_json[3:-3].strip()
+
+            
+
+        data = json.loads(raw_json)
+
+        action = data.get("action")
+
+
+
+        # --- РОУТИНГ ДЕЙСТВИЙ ---
+
+
+
+        # Действие: УДАЛЕНИЕ (оставляем как было)
+
+        if action == "delete":
+
+            m_id = data.get("meeting_id")
+
+            if not m_id:
+
+                return await processing_msg.edit_text("❌ Укажите ID встречи для удаления.")
+
+            
+
+            if db.delete_meeting(m_id):
+
+                await processing_msg.edit_text(f"🗑 Встреча [ID:{m_id}] успешно отменена.")
+
+            else:
+
+                await processing_msg.edit_text(f"❌ Встреча [ID:{m_id}] не найдена.")
+
+
+
+        # Действие: ОБНОВЛЕНИЕ (с уведомлениями)
+
+        elif action == "update":
+
+            m_id = data.get("meeting_id")
+
+            if not m_id:
+
+                return await processing_msg.edit_text("❌ Укажите ID встречи для изменения.")
+
+            
+
+            participants = data.get("participants", [])
+
+            start_dt = data.get("start_dt")
+
+            end_dt = data.get("end_dt")
+
+            
+
+            users_map = db.get_users_ids_by_names(participants)
+
+            
+
+            # Удаляем старую
+
+            db.delete_meeting(m_id)
+
+            
+
+            # Пробуем создать новую
+
+            user_ids = list(users_map.values())
+
+            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
+
+            
+
+            if success:
+
+                await processing_msg.edit_text(f"✅ Встреча [ID:{m_id}] обновлена!\nНовое время: {start_dt} - {end_dt}\nУчастники: {', '.join(participants)}")
+
+                
+
+                # РАССЫЛКА УВЕДОМЛЕНИЙ ОБ ОБНОВЛЕНИИ
+
+                tg_ids = db.get_tg_ids_by_names(participants)
+
+                for p_name, p_tg_id in tg_ids.items():
+
+                    if p_tg_id == message.from_user.id:
+
+                        continue  # Пропускаем автора изменений
+
+                    try:
+
+                        await bot.send_message(
+
+                            chat_id=p_tg_id,
+
+                            text=f"🔄 <b>Встреча [ID:{m_id}] изменена!</b>\n\n"
+
+                                 f"<b>Новое время:</b> {start_dt} - {end_dt}\n"
+
+                                 f"<b>Состав участников:</b> {', '.join(participants)}",
+
+                            parse_mode="HTML"
+
+                        )
+
+                    except Exception as e:
+
+                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
+
+            else:
+
+                await processing_msg.edit_text(f"❌ Не удалось перенести: пересечение времени у {', '.join(set(conflicts))}. (Встреча отменена, создайте заново).")
+
+
+
+        # Действие: СОЗДАНИЕ (с уведомлениями)
+
+        elif action == "create":
+
+            participants = data.get("participants", [])
+
+            start_dt = data.get("start_dt")
+
+            end_dt = data.get("end_dt")
+
+            users_map = db.get_users_ids_by_names(participants)
+
+            missing = [p for p in participants if p not in users_map]
+
+            
+
+            if missing:
+
+                return await processing_msg.edit_text(f"Не найдены в базе: {', '.join(missing)}")
+
+                
+
+            user_ids = list(users_map.values())
+
+            success, conflicts = db.check_collision_and_book(user_ids, start_dt, end_dt)
+
+            
+
+            if success:
+
+                await processing_msg.edit_text(f"✅ Встреча забронирована!\nУчастники: {', '.join(participants)}\nВремя: {start_dt} - {end_dt}")
+
+                
+
+                # РАССЫЛКА УВЕДОМЛЕНИЙ О НОВОЙ ВСТРЕЧЕ
+
+                tg_ids = db.get_tg_ids_by_names(participants)
+
+                for p_name, p_tg_id in tg_ids.items():
+
+                    if p_tg_id == message.from_user.id:
+
+                        continue  # Пропускаем создателя встречи
+
+                    try:
+
+                        await bot.send_message(
+
+                            chat_id=p_tg_id,
+
+                            text=f"📅 <b>Вам назначена новая встреча!</b>\n\n"
+
+                                 f"<b>Время:</b> {start_dt} - {end_dt}\n"
+
+                                 f"<b>Состав участников:</b> {', '.join(participants)}",
+
+                            parse_mode="HTML"
+
+                        )
+
+                    except Exception as e:
+
+                        print(f"Не удалось отправить уведомление для {p_name}: {e}")
+
+            else:
+
+                await processing_msg.edit_text(f"❌ Ошибка: пересечение времени.\nЗанятые сотрудники: {', '.join(set(conflicts))}")
+
+        else:
+
+            await processing_msg.edit_text("🤔 Не совсем понял, что нужно сделать. Попробуйте сформулировать иначе.")
+
+
+
+    except Exception as e:
+
+        await processing_msg.edit_text(f"Ошибка системы: {e}")
+
+
+
+async def main():
+
+    await dp.start_polling(bot)
+
+
+
+if __name__ == "__main__":
+
+    asyncio.run(main())
