@@ -158,3 +158,14 @@ def get_unregistered_users():
     users = [row[0] for row in c.fetchall()]
     conn.close()
     return users
+
+def get_tg_ids_by_names(names: list):
+    """Возвращает словарь {имя: tg_id} для участников, которые уже зарегистрированы в боте"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    placeholders = ','.join('?' for _ in names)
+    # Выбираем только тех, у кого tg_id не NULL
+    c.execute(f"SELECT name, tg_id FROM users WHERE name IN ({placeholders}) AND tg_id IS NOT NULL", tuple(names))
+    results = c.fetchall()
+    conn.close()
+    return {name: tg_id for name, tg_id in results}
