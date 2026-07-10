@@ -16,8 +16,8 @@ def init_db():
         initial_users = [
             (1, None, 'Иван', '🔴'), 
             (2, None, 'Анна', '🔵'), 
-            (3, None, 'Петр', '🟢'), 
-            (4, None, 'Семен', '🟡'), 
+            (3, None, 'Михаил', '🟢'), 
+            (4, None, 'Антон', '🟡'), 
             (5, None, 'Андрей', '🟣')
         ]
         c.executemany("INSERT INTO users (id, tg_id, name, color_emoji) VALUES (?, ?, ?, ?)", initial_users)
